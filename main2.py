@@ -4,37 +4,28 @@ import platform
 import collections
 import time
 import subprocess
-import json
-
-try:
-    import GPUtil
-except ImportError:
-    GPUtil = None
-try:
-    import cpuinfo
-except ImportError:
-    cpuinfo = None
-
+import socket
+import GPUtil
+import cpuinfo
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QPushButton, QFrame, QGridLayout,
     QProgressBar, QSizePolicy, QScrollArea, QListWidget, QListWidgetItem,
     QStackedWidget, QGraphicsDropShadowEffect
 )
-from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QPen
-from PyQt5.QtCore import Qt, QSize, QPropertyAnimation, QTimer, QRectF, pyqtSignal, QEvent, QParallelAnimationGroup
+from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt, QPropertyAnimation, QTimer, QRectF, pyqtSignal, QEvent, QParallelAnimationGroup
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.ticker import FuncFormatter
-
 import qdarkstyle
 
 BG_COLOR_DARK = "#1A202C"
 BG_COLOR_MEDIUM = "#2D3748"
 BG_COLOR_LIGHT = "#4A5568"
 ACCENT_COLOR_BLUE = "#4299E1"
-NOT_ACCENT_COLOR_BLUE = "#28465C"
+NOT_ACCENT_COLOR_BLUE = "#28445C"
 ACCENT_COLOR_GREEN = "#48BB78"
 ACCENT_COLOR_ORANGE = "#ED8936"
 ACCENT_COLOR_RED = "#E53E3E"
@@ -66,6 +57,25 @@ TABLE_HEADER_STYLE = f"""
     }}
 """
 
+def create_styled_back_button(slot_function):
+    button = QPushButton("← Volver al Dashboard")
+    button.setStyleSheet(f"""
+        QPushButton {{
+            background-color: {BG_COLOR_LIGHT};
+            border: none;
+            color: {TEXT_COLOR_LIGHT};
+            padding: 10px 15px;
+            text-align: center;
+            font-size: 14px;
+            border-radius: 5px;
+        }}
+        QPushButton:hover {{
+            background-color: {ACCENT_COLOR_BLUE};
+        }}
+    """)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.clicked.connect(slot_function)
+    return button
 
 class LiveGraphWidget(QWidget):
     clicked = pyqtSignal()
@@ -99,7 +109,7 @@ class LiveGraphWidget(QWidget):
 
         self.ax.grid(True, linestyle=':', alpha=0.5, color=TEXT_COLOR_MUTED)
         self.ax.set_ylabel(self.y_label, color=TEXT_COLOR_MUTED, fontsize=8)
-        self.ax.set_xlabel("Time (s)", color=TEXT_COLOR_MUTED, fontsize=10)
+        self.ax.set_xlabel("Tiempo (s)", color=TEXT_COLOR_MUTED, fontsize=10)
 
         self.line1, = self.ax.plot([], [], color=ACCENT_COLOR_GREEN)
         self.line2 = None
@@ -108,7 +118,6 @@ class LiveGraphWidget(QWidget):
         if '%' in self.y_label:
             self.ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{int(y)}%'))
 
-        # Solo aplica sombra si shadow=True
         if shadow:
             self.shadow = QGraphicsDropShadowEffect(self)
             self.shadow.setBlurRadius(0)
@@ -149,7 +158,7 @@ class LiveGraphWidget(QWidget):
             self.leave_group = None
 
     def update_data(self, value):
-        self.history.append(value) # ¡Esta es la línea que faltaba!
+        self.history.append(value)
         self.ax.clear()
         self.ax.set_title(self.title, color=TEXT_COLOR_LIGHT, fontsize=10)
         self.ax.set_facecolor(BG_COLOR_DARK)
@@ -162,30 +171,28 @@ class LiveGraphWidget(QWidget):
 
         self.ax.grid(True, linestyle=':', alpha=0.5, color=TEXT_COLOR_MUTED)
         self.ax.set_ylabel(self.y_label, color=TEXT_COLOR_MUTED, fontsize=8)
-        self.ax.set_xlabel("Time (s)", color=TEXT_COLOR_MUTED, fontsize=10)
-
-        self.line1, = self.ax.plot([], [], color=ACCENT_COLOR_GREEN)
-        self.line2 = None
-        self.fill_area = self.ax.fill_between([], [], [], color=ACCENT_COLOR_GREEN, alpha=0.2)
+        self.ax.set_xlabel("Tiempo (s)", color=TEXT_COLOR_MUTED, fontsize=10)
 
         if '%' in self.y_label:
             self.ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{int(y)}%'))
 
         x_data = list(range(len(self.history)))
 
-        if self.title == "Network Usage" or self.title == "Disk I/O Speed": # Modified for Disk I/O as well
-            if self.title == "Network Usage":
+        multi_line_titles = {"Uso de Red", "Velocidad del Disco", "Velocidad del Disco", "Uso de Red"}
+
+        if self.title.strip() in multi_line_titles:
+            if self.title.strip() == "Uso de Red" or self.title.strip() == "Uso de red":
                 sent_bytes = [d[0] for d in self.history]
                 recv_bytes = [d[1] for d in self.history]
-                plot_label_1 = 'Sent'
-                plot_label_2 = 'Received'
-                y_axis_label_prefix = "Data"
-            else: # Disk I/O Speed
+                plot_label_1 = 'Enviado'
+                plot_label_2 = 'Recibido'
+                y_axis_label_prefix = "Datos"
+            else:
                 sent_bytes = [d[0] for d in self.history] # read_bytes
                 recv_bytes = [d[1] for d in self.history] # write_bytes
-                plot_label_1 = 'Read'
-                plot_label_2 = 'Write'
-                y_axis_label_prefix = "Speed"
+                plot_label_1 = 'Lectura'
+                plot_label_2 = 'Escritura'
+                y_axis_label_prefix = "Velocidad"
 
             max_val = max(max(sent_bytes) if sent_bytes else 0, max(recv_bytes) if recv_bytes else 0)
             unit = "Bytes/s"
@@ -205,6 +212,7 @@ class LiveGraphWidget(QWidget):
             self.ax.legend(loc='upper left', frameon=False, labelcolor=TEXT_COLOR_MUTED, fontsize=8)
             max_current_val = max(max(sent_bytes) if sent_bytes else 0, max(recv_bytes) if recv_bytes else 0)
             self.ax.set_ylim(0, max(0.1, max_current_val * 1.1))
+            # NO fill_between aquí
         else:
             y_data = list(self.history)
             self.ax.plot(x_data, y_data, color=ACCENT_COLOR_GREEN)
@@ -243,30 +251,12 @@ class CPUDetailWidget(QWidget):
         self.main_layout.setContentsMargins(20, 20, 20, 20)
         self.main_layout.setSpacing(20)
 
-        back_button = QPushButton("← Volver al Dashboard")
-        back_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {BG_COLOR_LIGHT};
-                border: none;
-                color: {TEXT_COLOR_LIGHT};
-                padding: 10px 15px;
-                text-align: center;
-                font-size: 14px;
-                border-radius: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {ACCENT_COLOR_BLUE};
-            }}
-        """)
-        back_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_button.clicked.connect(self.back_to_dashboard.emit)
+        back_button = create_styled_back_button(self.back_to_dashboard.emit)
         self.main_layout.addWidget(back_button, alignment=Qt.AlignLeft)
 
-
-        self.cpu_detail_graph = LiveGraphWidget("CPU Usage (Detailed)", "CPU (%)", maxlen=120, shadow=False)
+        self.cpu_detail_graph = LiveGraphWidget("Uso del CPU", "CPU (%)", maxlen=120, shadow=False)
         self.cpu_detail_graph.setMinimumHeight(250)
         self.main_layout.addWidget(self.cpu_detail_graph)
-
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -276,7 +266,6 @@ class CPUDetailWidget(QWidget):
         self.info_h_layout = QHBoxLayout(self.scroll_content_widget)
         self.info_h_layout.setSpacing(0)
         self.info_h_layout.setContentsMargins(0, 0, 0, 0)
-
 
         self.dynamic_info_frame = QFrame()
         self.dynamic_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
@@ -323,7 +312,7 @@ class CPUDetailWidget(QWidget):
         temp_table_section_v_layout.setContentsMargins(0, 0, 0, 0)
         temp_table_section_v_layout.setSpacing(5)
 
-        lbl_temp_header = QLabel("<h3>Temperatura de los núcleos/h3>")
+        lbl_temp_header = QLabel("<h3>Temperatura de los núcleos</h3>")
         lbl_temp_header.setAlignment(Qt.AlignCenter)
         temp_table_section_v_layout.addWidget(lbl_temp_header)
 
@@ -355,7 +344,7 @@ class CPUDetailWidget(QWidget):
 
         self.core_usage_table_layout = QGridLayout()
         self.core_usage_table_layout.setContentsMargins(0, 0, 0, 0)
-        self.core_usage_table_layout.setSpacing(0) 
+        self.core_usage_table_layout.setSpacing(0)
 
         lbl_usage_core_header = QLabel("<b>Núcleo</b>")
         lbl_usage_core_header.setStyleSheet(TABLE_HEADER_STYLE)
@@ -380,7 +369,6 @@ class CPUDetailWidget(QWidget):
         self.info_h_layout.addWidget(self.dynamic_info_frame)
 
 
-        # --- Static Information (Right Side) ---
         self.static_info_frame = QFrame()
         self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
         self.static_info_layout = QGridLayout(self.static_info_frame)
@@ -432,7 +420,6 @@ class CPUDetailWidget(QWidget):
 
         self.update_static_info()
 
-
     def update_static_info(self):
         if cpuinfo:
             info = cpuinfo.get_cpu_info()
@@ -467,7 +454,6 @@ class CPUDetailWidget(QWidget):
         self.lbl_physical_cores.setText(str(psutil.cpu_count(logical=False)))
         self.lbl_logical_cores.setText(str(psutil.cpu_count(logical=True)))
 
-
     def update_dynamic_info(self):
         overall_cpu_percent = psutil.cpu_percent(interval=None)
         self.lbl_overall_usage.setText(f"{overall_cpu_percent:.1f}%")
@@ -475,7 +461,7 @@ class CPUDetailWidget(QWidget):
 
         cpu_freq = psutil.cpu_freq()
         if cpu_freq:
-            self.lbl_cpu_freq.setText(f"{cpu_freq.current:.2f} MHz (Min: {cpu_freq.min:.2f} MHz, Max: {cpu_freq.max:.2f} MHz)")
+            self.lbl_cpu_freq.setText(f"{cpu_freq.current / 1000:.2f} GHz (Min: {cpu_freq.min / 1000:.2f} GHz, Max: {cpu_freq.max / 1000:.2f} GHz)")
         else:
             self.lbl_cpu_freq.setText("No disponible")
 
@@ -565,11 +551,11 @@ class CPUDetailWidget(QWidget):
             if displayed_cores_count == 0:
                 no_temps_label = QLabel("No se detectaron temperaturas de núcleos específicos.")
                 no_temps_label.setAlignment(Qt.AlignCenter)
-                no_temps_label.setStyleSheet(TABLE_CELL_STYLE) 
+                no_temps_label.setStyleSheet(TABLE_CELL_STYLE)
                 self.temp_table_layout.addWidget(no_temps_label, temp_row_idx, 0, 1, 2)
                 temp_row_idx += 1
         else:
-            no_temps_label = QLabel("No disponible (requiere lm-sensors en Linux)")
+            no_temps_label = QLabel("No disponible")
             no_temps_label.setAlignment(Qt.AlignCenter)
             no_temps_label.setStyleSheet(TABLE_CELL_STYLE)
             self.temp_table_layout.addWidget(no_temps_label, temp_row_idx, 0, 1, 2)
@@ -585,7 +571,7 @@ class CPUDetailWidget(QWidget):
                     self.core_usage_table_layout.removeItem(item)
 
         per_cpu_percent = psutil.cpu_percent(interval=None, percpu=True)
-        usage_row_idx = 1 
+        usage_row_idx = 1
 
         for i, usage in enumerate(per_cpu_percent):
             if i >= max_cores_to_display:
@@ -605,7 +591,7 @@ class CPUDetailWidget(QWidget):
         if usage_row_idx == 1:
             no_usage_label = QLabel("No se detectó uso por núcleo.")
             no_usage_label.setAlignment(Qt.AlignCenter)
-            no_usage_label.setStyleSheet(TABLE_CELL_STYLE) # Apply default cell style
+            no_usage_label.setStyleSheet(TABLE_CELL_STYLE)
             self.core_usage_table_layout.addWidget(no_usage_label, usage_row_idx, 0, 1, 2)
 
 
@@ -618,26 +604,10 @@ class RAMDetailWidget(QWidget):
         self.main_layout.setContentsMargins(20, 20, 20, 20)
         self.main_layout.setSpacing(20)
 
-        back_button = QPushButton("← Volver al Dashboard")
-        back_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {BG_COLOR_LIGHT};
-                border: none;
-                color: {TEXT_COLOR_LIGHT};
-                padding: 10px 15px;
-                text-align: center;
-                font-size: 14px;
-                border-radius: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {ACCENT_COLOR_BLUE};
-            }}
-        """)
-        back_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_button.clicked.connect(self.back_to_dashboard.emit)
+        back_button = create_styled_back_button(self.back_to_dashboard.emit)
         self.main_layout.addWidget(back_button, alignment=Qt.AlignLeft)
 
-        self.ram_detail_graph = LiveGraphWidget("RAM Usage (Detailed)", "RAM (%)", maxlen=120, shadow=False)
+        self.ram_detail_graph = LiveGraphWidget("Uso de RAM", "RAM (%)", maxlen=120, shadow=False)
         self.ram_detail_graph.setMinimumHeight(250)
         self.main_layout.addWidget(self.ram_detail_graph)
 
@@ -779,7 +749,7 @@ class RAMDetailWidget(QWidget):
         self.ram_detail_graph.update_data(percent_usage)
 
 
-class DiskDetailWidget(QWidget): # NEW CLASS FOR DISK DETAILS
+class DiskDetailWidget(QWidget):
     back_to_dashboard = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -788,30 +758,12 @@ class DiskDetailWidget(QWidget): # NEW CLASS FOR DISK DETAILS
         self.main_layout.setContentsMargins(20, 20, 20, 20)
         self.main_layout.setSpacing(20)
 
-        back_button = QPushButton("← Volver al Dashboard")
-        back_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {BG_COLOR_LIGHT};
-                border: none;
-                color: {TEXT_COLOR_LIGHT};
-                padding: 10px 15px;
-                text-align: center;
-                font-size: 14px;
-                border-radius: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {ACCENT_COLOR_BLUE};
-            }}
-        """)
-        back_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_button.clicked.connect(self.back_to_dashboard.emit)
+        back_button = create_styled_back_button(self.back_to_dashboard.emit)
         self.main_layout.addWidget(back_button, alignment=Qt.AlignLeft)
-        
-        # Graph for Disk I/O Speed (Read/Write)
-        self.disk_io_graph = LiveGraphWidget("Disk I/O Speed (Detailed)", "Speed (Bytes/s)", maxlen=120, shadow=False)
+
+        self.disk_io_graph = LiveGraphWidget("Velocidad del Disco", "Velocidad (Bytes/s)", maxlen=120, shadow=False)
         self.disk_io_graph.setMinimumHeight(250)
         self.main_layout.addWidget(self.disk_io_graph)
-
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -858,7 +810,6 @@ class DiskDetailWidget(QWidget): # NEW CLASS FOR DISK DETAILS
         self.dynamic_info_layout.addStretch()
         self.info_h_layout.addWidget(self.dynamic_info_frame)
 
-
         # Static Disk Information (Right Side)
         self.static_info_frame = QFrame()
         self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
@@ -869,15 +820,14 @@ class DiskDetailWidget(QWidget): # NEW CLASS FOR DISK DETAILS
         self.static_info_layout.addWidget(QLabel("<h2>Información del Disco</h2>"), 0, 0, 1, 2)
         row = 1
 
-        self.static_info_layout.addWidget(QLabel("Tipo de Sistema de Archivos:"), row, 0)
-        self.lbl_disk_fstype = QLabel("N/A")
-        self.static_info_layout.addWidget(self.lbl_disk_fstype, row, 1)
+        self.static_info_layout.addWidget(QLabel("Velocidad de Lectura:"), row, 0)
+        self.lbl_disk_read_speed = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_disk_read_speed, row, 1)
         row += 1
 
-        # Placeholder for disk model/vendor info if we can get it later
-        self.static_info_layout.addWidget(QLabel("Modelo / Proveedor:"), row, 0)
-        self.lbl_disk_model = QLabel("N/A")
-        self.static_info_layout.addWidget(self.lbl_disk_model, row, 1)
+        self.static_info_layout.addWidget(QLabel("Velocidad de Escritura:"), row, 0)
+        self.lbl_disk_write_speed = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_disk_write_speed, row, 1)
         row += 1
 
         self.static_info_layout.setRowStretch(row, 1)
@@ -908,21 +858,337 @@ class DiskDetailWidget(QWidget): # NEW CLASS FOR DISK DETAILS
 
         # Update Disk I/O Speed
         current_disk_io = psutil.disk_io_counters(perdisk=False)
+        read_bytes_diff = 0
+        write_bytes_diff = 0
+
         if self.last_disk_io_counters:
             read_bytes_diff = current_disk_io.read_bytes - self.last_disk_io_counters.read_bytes
             write_bytes_diff = current_disk_io.write_bytes - self.last_disk_io_counters.write_bytes
             self.disk_io_graph.update_data((read_bytes_diff, write_bytes_diff))
-        self.last_disk_io_counters = current_disk_io # Update for next iteration
+        self.last_disk_io_counters = current_disk_io
 
-        # Update Static Info on first run (or if it wasn't updated previously)
-        if self.lbl_disk_fstype.text() == "N/A": # Only fetch static info once
-            partitions = psutil.disk_partitions()
-            root_partition = next((p for p in partitions if p.mountpoint == '/'), None)
-            if root_partition:
-                self.lbl_disk_fstype.setText(root_partition.fstype)
+        def format_bytes_per_second(bytes_val):
+            if bytes_val >= (1024**3):
+                return f"{bytes_val / (1024**3):.2f} GB/s"
+            elif bytes_val >= (1024**2):
+                return f"{bytes_val / (1024**2):.2f} MB/s"
+            elif bytes_val >= 1024:
+                return f"{bytes_val / 1024:.2f} KB/s"
             else:
-                self.lbl_disk_fstype.setText("N/A (Root partition not found)")
+                return f"{bytes_val:.2f} Bytes/s"
 
+        self.lbl_disk_read_speed.setText(format_bytes_per_second(read_bytes_diff))
+        self.lbl_disk_write_speed.setText(format_bytes_per_second(write_bytes_diff))
+
+class NetworkDetailWidget(QWidget):
+    back_to_dashboard = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
+        self.main_layout.setSpacing(20)
+
+        back_button = create_styled_back_button(self.back_to_dashboard.emit)
+        self.main_layout.addWidget(back_button, alignment=Qt.AlignLeft)
+
+        self.network_detail_graph = LiveGraphWidget("Uso de Red", "Datos (Bytes/s)", maxlen=120, shadow=False)
+        self.network_detail_graph.setMinimumHeight(250)
+        self.main_layout.addWidget(self.network_detail_graph)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; }")
+
+        self.scroll_content_widget = QWidget()
+        self.info_h_layout = QHBoxLayout(self.scroll_content_widget)
+        self.info_h_layout.setSpacing(20)
+        self.info_h_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Dynamic Network Information Frame
+        self.dynamic_info_frame = QFrame()
+        self.dynamic_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
+        self.dynamic_info_layout = QVBoxLayout(self.dynamic_info_frame)
+        self.dynamic_info_layout.setContentsMargins(5, 5, 5, 5)
+        self.dynamic_info_layout.setSpacing(2)
+
+        dynamic_labels_grid = QGridLayout()
+        dynamic_labels_grid.setContentsMargins(0, 0, 0, 0)
+        dynamic_labels_grid.setSpacing(2)
+        row = 0
+
+        dynamic_labels_grid.addWidget(QLabel("Recibido:"), row, 0)
+        self.lbl_net_received = QLabel("N/A")
+        dynamic_labels_grid.addWidget(self.lbl_net_received, row, 1)
+        row += 1
+
+        dynamic_labels_grid.addWidget(QLabel("Enviado:"), row, 0)
+        self.lbl_net_sent = QLabel("N/A")
+        dynamic_labels_grid.addWidget(self.lbl_net_sent, row, 1)
+        row += 1
+
+        self.dynamic_info_layout.addLayout(dynamic_labels_grid)
+        self.dynamic_info_layout.addStretch()
+        self.info_h_layout.addWidget(self.dynamic_info_frame)
+
+        # Static Network Information Frame
+        self.static_info_frame = QFrame()
+        self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
+        self.static_info_layout = QGridLayout(self.static_info_frame)
+        self.static_info_layout.setContentsMargins(5, 5, 5, 5)
+        self.static_info_layout.setSpacing(2)
+
+        self.static_info_layout.addWidget(QLabel("<h2>Información de Red</h2>"), 0, 0, 1, 2)
+        row = 1
+
+        self.static_info_layout.addWidget(QLabel("Dirección IP (IPv4):"), row, 0)
+        self.lbl_net_ip = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_net_ip, row, 1)
+        row += 1
+
+        self.static_info_layout.addWidget(QLabel("Dirección MAC:"), row, 0)
+        self.lbl_net_mac = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_net_mac, row, 1)
+        row += 1
+
+        self.static_info_layout.addWidget(QLabel("Velocidad Nominal:"), row, 0)
+        self.lbl_net_speed = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_net_speed, row, 1)
+        row += 1
+
+        self.static_info_layout.setRowStretch(row, 1)
+        self.info_h_layout.addWidget(self.static_info_frame)
+
+        self.info_h_layout.setStretch(0, 1)
+        self.info_h_layout.setStretch(1, 1)
+
+        self.scroll_area.setWidget(self.scroll_content_widget)
+        self.main_layout.addWidget(self.scroll_area)
+        self.main_layout.addStretch()
+
+        self.last_net_io_counters = psutil.net_io_counters()
+        self.update_static_info()
+
+    def update_dynamic_info(self):
+        current_net_io = psutil.net_io_counters()
+        bytes_sent_diff = current_net_io.bytes_sent - self.last_net_io_counters.bytes_sent
+        bytes_recv_diff = current_net_io.bytes_recv - self.last_net_io_counters.bytes_recv
+        self.last_net_io_counters = current_net_io
+
+        self.network_detail_graph.update_data((bytes_sent_diff, bytes_recv_diff))
+
+        def format_bytes_per_second(bytes_val):
+            if bytes_val >= (1024**3):
+                return f"{bytes_val / (1024**3):.2f} GB/s"
+            elif bytes_val >= (1024**2):
+                return f"{bytes_val / (1024**2):.2f} MB/s"
+            elif bytes_val >= 1024:
+                return f"{bytes_val / 1024:.2f} KB/s"
+            else:
+                return f"{bytes_val:.2f} Bytes/s"
+
+        self.lbl_net_received.setText(format_bytes_per_second(bytes_recv_diff))
+        self.lbl_net_sent.setText(format_bytes_per_second(bytes_sent_diff))
+
+    def update_static_info(self):
+        interfaces = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+
+        primary_ip = "N/A"
+        primary_mac = "N/A"
+        primary_speed = "N/A"
+
+        active_interfaces = []
+        for if_name, addrs in interfaces.items():
+            if if_name in stats and stats[if_name].isup and \
+               not (if_name == 'lo' or if_name.startswith('docker') or if_name.startswith('br-')):
+                active_interfaces.append((if_name, addrs))
+
+        active_interfaces.sort(key=lambda x: any(addr.family == socket.AF_INET for addr in x[1]), reverse=True)
+
+        for if_name, addrs in active_interfaces:
+            current_ip = "N/A"
+            current_mac = "N/A"
+
+            for addr in addrs:
+                if addr.family == socket.AF_INET:
+                    current_ip = addr.address
+                elif addr.family == psutil.AF_LINK:
+                    current_mac = addr.address
+
+            if current_ip != "N/A" and current_mac != "N/A":
+                primary_interface_name = if_name
+                primary_ip = current_ip
+                primary_mac = current_mac
+
+                if if_name in stats and stats[if_name].speed != 0:
+                    primary_speed = f"{stats[if_name].speed} Mbps"
+
+                break
+
+        self.lbl_net_ip.setText(primary_ip)
+        self.lbl_net_mac.setText(primary_mac)
+        self.lbl_net_speed.setText(primary_speed)
+
+class GPUDetailWidget(QWidget):
+    back_to_dashboard = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
+        self.main_layout.setSpacing(20)
+
+        back_button = create_styled_back_button(self.back_to_dashboard.emit)
+        self.main_layout.addWidget(back_button, alignment=Qt.AlignLeft)
+
+        self.gpu_detail_graph = LiveGraphWidget("GPU Usage (Detailed)", "GPU (%)", maxlen=120, shadow=False)
+        self.gpu_detail_graph.setMinimumHeight(250)
+        self.main_layout.addWidget(self.gpu_detail_graph)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; }")
+
+        self.scroll_content_widget = QWidget()
+        self.info_h_layout = QHBoxLayout(self.scroll_content_widget)
+        self.info_h_layout.setSpacing(20)
+        self.info_h_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Dynamic GPU Information Frame
+        self.dynamic_info_frame = QFrame()
+        self.dynamic_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
+        self.dynamic_info_layout = QVBoxLayout(self.dynamic_info_frame)
+        self.dynamic_info_layout.setContentsMargins(5, 5, 5, 5)
+        self.dynamic_info_layout.setSpacing(2)
+
+        dynamic_labels_grid = QGridLayout()
+        dynamic_labels_grid.setContentsMargins(0, 0, 0, 0)
+        dynamic_labels_grid.setSpacing(2)
+        row = 0
+
+        dynamic_labels_grid.addWidget(QLabel("Porcentaje de Uso:"), row, 0)
+        self.lbl_gpu_usage = QLabel("N/A")
+        dynamic_labels_grid.addWidget(self.lbl_gpu_usage, row, 1)
+        row += 1
+
+        dynamic_labels_grid.addWidget(QLabel("Temperatura:"), row, 0)
+        self.lbl_gpu_temperature = QLabel("N/A")
+        dynamic_labels_grid.addWidget(self.lbl_gpu_temperature, row, 1)
+        row += 1
+
+        dynamic_labels_grid.addWidget(QLabel("Memoria Usada:"), row, 0)
+        self.lbl_gpu_memory_used = QLabel("N/A")
+        dynamic_labels_grid.addWidget(self.lbl_gpu_memory_used, row, 1)
+        row += 1
+
+        dynamic_labels_grid.addWidget(QLabel("Memoria Disponible:"), row, 0)
+        self.lbl_gpu_memory_free = QLabel("N/A")
+        dynamic_labels_grid.addWidget(self.lbl_gpu_memory_free, row, 1)
+        row += 1
+
+        dynamic_labels_grid.addWidget(QLabel("Porcentaje Memoria:"), row, 0)
+        self.lbl_gpu_memory_percent = QLabel("N/A")
+        dynamic_labels_grid.addWidget(self.lbl_gpu_memory_percent, row, 1)
+        row += 1
+
+        self.dynamic_info_layout.addLayout(dynamic_labels_grid)
+        self.dynamic_info_layout.addStretch()
+        self.info_h_layout.addWidget(self.dynamic_info_frame)
+
+        # Static GPU Information Frame
+        self.static_info_frame = QFrame()
+        self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
+        self.static_info_layout = QGridLayout(self.static_info_frame)
+        self.static_info_layout.setContentsMargins(5, 5, 5, 5)
+        self.static_info_layout.setSpacing(2)
+
+        self.static_info_layout.addWidget(QLabel("<h2>Información de la GPU</h2>"), 0, 0, 1, 2)
+        row = 1
+
+        self.static_info_layout.addWidget(QLabel("Nombre de la GPU:"), row, 0)
+        self.lbl_gpu_name = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_gpu_name, row, 1)
+        row += 1
+
+        self.static_info_layout.addWidget(QLabel("Memoria Total:"), row, 0)
+        self.lbl_gpu_total_memory = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_gpu_total_memory, row, 1)
+        row += 1
+
+        self.static_info_layout.setRowStretch(row, 1)
+        self.info_h_layout.addWidget(self.static_info_frame)
+
+        self.info_h_layout.setStretch(0, 1)
+        self.info_h_layout.setStretch(1, 1)
+
+        self.scroll_area.setWidget(self.scroll_content_widget)
+        self.main_layout.addWidget(self.scroll_area)
+        self.main_layout.addStretch()
+
+        self.update_static_info()
+
+    def update_static_info(self):
+        if GPUtil:
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu = gpus[0]
+                    self.lbl_gpu_name.setText(gpu.name)
+                    self.lbl_gpu_total_memory.setText(f"{gpu.memoryTotal:.2f} MB")
+                else:
+                    self.lbl_gpu_name.setText("No GPU detectada.")
+                    self.lbl_gpu_total_memory.setText("N/A")
+            except Exception as e:
+                self.lbl_gpu_name.setText("N/A (Error al obtener información de GPU)")
+                self.lbl_gpu_total_memory.setText("N/A (Error al obtener información de GPU)")
+                print(f"Error getting GPU static info: {e}")
+        else:
+            self.lbl_gpu_name.setText("N/A (GPUtil no encontrado)")
+            self.lbl_gpu_total_memory.setText("N/A (GPUtil no encontrado)")
+
+
+    def update_dynamic_info(self):
+        if GPUtil:
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu = gpus[0]
+                    gpu_load_percent = gpu.load * 100
+                    memory_used_mb = gpu.memoryUsed
+                    memory_free_mb = gpu.memoryFree
+                    memory_total_mb = gpu.memoryTotal
+                    memory_util_percent = gpu.memoryUtil * 100
+                    gpu_temperature = gpu.temperature
+
+                    self.lbl_gpu_usage.setText(f"{gpu_load_percent:.1f}%")
+                    self.lbl_gpu_temperature.setText(f"{gpu_temperature:.1f} °C")
+                    self.lbl_gpu_memory_used.setText(f"{memory_used_mb / 1000:.2f} GB")
+                    self.lbl_gpu_memory_free.setText(f"{memory_free_mb / 1000:.2f} GB")
+                    self.lbl_gpu_memory_percent.setText(f"{memory_util_percent:.1f}%")
+
+                    self.gpu_detail_graph.update_data(gpu_load_percent)
+                else:
+                    self.lbl_gpu_usage.setText("No GPU detectada.")
+                    self.lbl_gpu_temperature.setText("N/A")
+                    self.lbl_gpu_memory_used.setText("N/A")
+                    self.lbl_gpu_memory_free.setText("N/A")
+                    self.lbl_gpu_memory_percent.setText("N/A")
+
+            except Exception as e:
+                self.lbl_gpu_usage.setText("N/A (Error)")
+                self.lbl_gpu_temperature.setText("N/A")
+                self.lbl_gpu_memory_used.setText("N/A")
+                self.lbl_gpu_memory_free.setText("N/A")
+                self.lbl_gpu_memory_percent.setText("N/A")
+
+                print(f"Error getting GPU dynamic info: {e}")
+        else:
+            self.lbl_gpu_usage.setText("N/A (GPUtil no encontrado)")
+            self.lbl_gpu_temperature.setText("N/A")
+            self.lbl_gpu_memory_used.setText("N/A")
+            self.lbl_gpu_memory_free.setText("N/A")
+            self.lbl_gpu_memory_percent.setText("N/A")
 
 class Dashboard(QMainWindow):
     def __init__(self):
@@ -1025,14 +1291,17 @@ class Dashboard(QMainWindow):
         self.menu_layout.setContentsMargins(10, 10, 10, 10)
         self.menu_layout.setSpacing(5)
 
-        menu_items = [
+        menu_items_text = [
             ("Dashboard"),
-            ("Procesos"),
-            ("Rendimiento"),
-            ("Opciones")
+            ("CPU"),
+            ("RAM"),
+            ("Disco"),
+            ("Red"),
+            ("GPU"),
         ]
+        self.menu_buttons = []
 
-        for text in menu_items:
+        for text in menu_items_text:
             btn = QPushButton(f"{text}")
             btn.setStyleSheet(f"""
                 QPushButton {{
@@ -1051,6 +1320,16 @@ class Dashboard(QMainWindow):
             """)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.menu_layout.addWidget(btn)
+            self.menu_buttons.append(btn)
+
+        # Connect menu buttons to relevant functions
+        self.menu_buttons[0].clicked.connect(self.show_dashboard)
+        self.menu_buttons[1].clicked.connect(self.show_cpu_detail)
+        self.menu_buttons[2].clicked.connect(self.show_ram_detail)
+        self.menu_buttons[3].clicked.connect(self.show_disk_detail)
+        self.menu_buttons[4].clicked.connect(self.show_network_detail)
+        self.menu_buttons[5].clicked.connect(self.show_gpu_detail)
+
         self.menu_layout.addStretch()
 
         self.dashboard_view = QWidget()
@@ -1062,15 +1341,20 @@ class Dashboard(QMainWindow):
         graph_row_1_layout = QHBoxLayout(graph_row_1_widget)
         graph_row_1_layout.setSpacing(20)
 
-        self.cpu_graph = LiveGraphWidget("CPU Usage (Overall)", "CPU (%)")
+        self.cpu_graph = LiveGraphWidget("Uso de CPU", "CPU (%)")
         self.cpu_graph.setMinimumHeight(150)
         self.cpu_graph.clicked.connect(self.show_cpu_detail)
         graph_row_1_layout.addWidget(self.cpu_graph)
 
-        self.ram_graph = LiveGraphWidget("RAM Usage (Memory)", "RAM (%)")
+        self.ram_graph = LiveGraphWidget("Uso de RAM (Memoria)", "RAM (%)")
         self.ram_graph.setMinimumHeight(150)
-        self.ram_graph.clicked.connect(self.show_ram_detail) # Connect RAM graph click to new detail view
+        self.ram_graph.clicked.connect(self.show_ram_detail)
         graph_row_1_layout.addWidget(self.ram_graph)
+
+        self.disk_io_dashboard_graph = LiveGraphWidget("Velocidad del Disco", "Velocidad (Bytes/s)")
+        self.disk_io_dashboard_graph.setMinimumHeight(150)
+        self.disk_io_dashboard_graph.clicked.connect(self.show_disk_detail)
+        graph_row_1_layout.addWidget(self.disk_io_dashboard_graph)
 
         self.dashboard_layout.addWidget(graph_row_1_widget)
 
@@ -1078,13 +1362,9 @@ class Dashboard(QMainWindow):
         graph_row_2_layout = QHBoxLayout(graph_row_2_widget)
         graph_row_2_layout.setSpacing(20)
 
-        self.disk_graph = LiveGraphWidget("Disk Usage (Root)", "Disk (%)")
-        self.disk_graph.setMinimumHeight(150)
-        self.disk_graph.clicked.connect(self.show_disk_detail) # Connect Disk graph click to new detail view
-        graph_row_2_layout.addWidget(self.disk_graph)
-
-        self.network_graph = LiveGraphWidget("Network Usage", "Data (Bytes/s)")
+        self.network_graph = LiveGraphWidget("Uso de Red", "Datos (Bytes/s)")
         self.network_graph.setMinimumHeight(150)
+        self.network_graph.clicked.connect(self.show_network_detail)
         graph_row_2_layout.addWidget(self.network_graph)
 
         self.gpu_graph = None
@@ -1093,8 +1373,9 @@ class Dashboard(QMainWindow):
             try:
                 gpus = GPUtil.getGPUs()
                 if gpus:
-                    self.gpu_graph = LiveGraphWidget(f"GPU Usage ({gpus[0].name})", "GPU (%)")
+                    self.gpu_graph = LiveGraphWidget(f"Uso GPU ({gpus[0].name})", "GPU (%)")
                     self.gpu_graph.setMinimumHeight(150)
+                    self.gpu_graph.clicked.connect(self.show_gpu_detail)
                     graph_row_2_layout.addWidget(self.gpu_graph)
                     gpu_detected = True
             except Exception:
@@ -1113,7 +1394,7 @@ class Dashboard(QMainWindow):
         top_processes_layout.setContentsMargins(15, 15, 15, 15)
         top_processes_layout.setSpacing(10)
 
-        top_processes_label = QLabel("Top Processes by CPU Usage")
+        top_processes_label = QLabel("Procesos")
         top_processes_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
         top_processes_layout.addWidget(top_processes_label)
 
@@ -1143,14 +1424,22 @@ class Dashboard(QMainWindow):
         self.ram_detail_widget = RAMDetailWidget()
         self.ram_detail_widget.back_to_dashboard.connect(self.show_dashboard)
 
-        self.disk_detail_widget = DiskDetailWidget() # Instantiate Disk Detail Widget
-        self.disk_detail_widget.back_to_dashboard.connect(self.show_dashboard) # Connect back button
+        self.disk_detail_widget = DiskDetailWidget()
+        self.disk_detail_widget.back_to_dashboard.connect(self.show_dashboard)
+
+        self.network_detail_widget = NetworkDetailWidget()
+        self.network_detail_widget.back_to_dashboard.connect(self.show_dashboard)
+
+        self.gpu_detail_widget = GPUDetailWidget()
+        self.gpu_detail_widget.back_to_dashboard.connect(self.show_dashboard)
 
         self.content_stack = QStackedWidget()
         self.content_stack.addWidget(self.dashboard_view)
         self.content_stack.addWidget(self.cpu_detail_widget)
         self.content_stack.addWidget(self.ram_detail_widget)
-        self.content_stack.addWidget(self.disk_detail_widget) # Add Disk Detail Widget to stack
+        self.content_stack.addWidget(self.disk_detail_widget)
+        self.content_stack.addWidget(self.network_detail_widget)
+        self.content_stack.addWidget(self.gpu_detail_widget)
 
         central_widget = QWidget()
         main_h_layout = QHBoxLayout(central_widget)
@@ -1177,7 +1466,7 @@ class Dashboard(QMainWindow):
         self.timer.start()
 
         self.last_net_io = psutil.net_io_counters()
-        # No need to initialize last_disk_io here, DiskDetailWidget handles its own last_disk_io_counters
+        self.last_disk_io = psutil.disk_io_counters(perdisk=False)
 
     def update_resource_usage(self):
         cpu_percent = psutil.cpu_percent(interval=None)
@@ -1186,8 +1475,11 @@ class Dashboard(QMainWindow):
         ram_percent = psutil.virtual_memory().percent
         self.ram_graph.update_data(ram_percent)
 
-        disk_percent = psutil.disk_usage('/').percent
-        self.disk_graph.update_data(disk_percent)
+        current_disk_io_dashboard = psutil.disk_io_counters(perdisk=False)
+        bytes_read_diff_disk_dashboard = current_disk_io_dashboard.read_bytes - self.last_disk_io.read_bytes
+        bytes_write_diff_disk_dashboard = current_disk_io_dashboard.write_bytes - self.last_disk_io.write_bytes
+        self.last_disk_io = current_disk_io_dashboard
+        self.disk_io_dashboard_graph.update_data((bytes_read_diff_disk_dashboard, bytes_write_diff_disk_dashboard))
 
         current_net_io = psutil.net_io_counters()
         bytes_sent_diff = current_net_io.bytes_sent - self.last_net_io.bytes_sent
@@ -1225,9 +1517,12 @@ class Dashboard(QMainWindow):
             self.cpu_detail_widget.update_dynamic_info()
         elif self.content_stack.currentWidget() == self.ram_detail_widget:
             self.ram_detail_widget.update_dynamic_info()
-        elif self.content_stack.currentWidget() == self.disk_detail_widget: # Update Disk detail info if active
+        elif self.content_stack.currentWidget() == self.disk_detail_widget:
             self.disk_detail_widget.update_dynamic_info()
-
+        elif self.content_stack.currentWidget() == self.network_detail_widget:
+            self.network_detail_widget.update_dynamic_info()
+        elif self.content_stack.currentWidget() == self.gpu_detail_widget:
+            self.gpu_detail_widget.update_dynamic_info()
 
     def show_cpu_detail(self):
         self.content_stack.setCurrentIndex(1)
@@ -1235,8 +1530,14 @@ class Dashboard(QMainWindow):
     def show_ram_detail(self):
         self.content_stack.setCurrentIndex(2)
 
-    def show_disk_detail(self): # New method to show Disk detail
-        self.content_stack.setCurrentIndex(3) # Index 3 for DiskDetailWidget
+    def show_disk_detail(self):
+        self.content_stack.setCurrentIndex(3)
+
+    def show_network_detail(self):
+        self.content_stack.setCurrentIndex(4)
+
+    def show_gpu_detail(self):
+        self.content_stack.setCurrentIndex(5)
 
     def show_dashboard(self):
         self.content_stack.setCurrentIndex(0)
