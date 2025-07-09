@@ -1,0 +1,13 @@
+
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+
+.DS_Store
+*.swp  # Archivos temporales de Vim
+*.swo
+
+*.log
+*.cache
