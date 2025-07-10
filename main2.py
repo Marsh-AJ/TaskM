@@ -9,12 +9,11 @@ import GPUtil
 import cpuinfo
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QPushButton, QFrame, QGridLayout,
-    QProgressBar, QSizePolicy, QScrollArea, QListWidget, QListWidgetItem,
+    QPushButton, QFrame, QGridLayout, QSizePolicy, QScrollArea, QListWidget, QListWidgetItem,
     QStackedWidget, QGraphicsDropShadowEffect
 )
 from PyQt5.QtGui import QFont, QColor
-from PyQt5.QtCore import Qt, QPropertyAnimation, QTimer, QRectF, pyqtSignal, QEvent, QParallelAnimationGroup
+from PyQt5.QtCore import Qt, QPropertyAnimation, QTimer, pyqtSignal, QEvent, QParallelAnimationGroup
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -212,7 +211,6 @@ class LiveGraphWidget(QWidget):
             self.ax.legend(loc='upper left', frameon=False, labelcolor=TEXT_COLOR_MUTED, fontsize=8)
             max_current_val = max(max(sent_bytes) if sent_bytes else 0, max(recv_bytes) if recv_bytes else 0)
             self.ax.set_ylim(0, max(0.1, max_current_val * 1.1))
-            # NO fill_between aquí
         else:
             y_data = list(self.history)
             self.ax.plot(x_data, y_data, color=ACCENT_COLOR_GREEN)
@@ -595,7 +593,7 @@ class CPUDetailWidget(QWidget):
             self.core_usage_table_layout.addWidget(no_usage_label, usage_row_idx, 0, 1, 2)
 
 
-class RAMDetailWidget(QWidget):
+class RAMDetailedWidget(QWidget):
     back_to_dashboard = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -656,7 +654,6 @@ class RAMDetailWidget(QWidget):
         self.dynamic_info_layout.addStretch()
         self.info_h_layout.addWidget(self.dynamic_info_frame)
 
-
         # Static RAM Information
         self.static_info_frame = QFrame()
         self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
@@ -677,6 +674,21 @@ class RAMDetailWidget(QWidget):
         self.static_info_layout.addWidget(self.lbl_ram_speed, row, 1)
         row += 1
 
+        self.static_info_layout.addWidget(QLabel("Cantidad de Slots:"), row, 0)
+        self.lbl_total_ram_slots = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_total_ram_slots, row, 1)
+        row += 1
+
+        self.static_info_layout.addWidget(QLabel("Slots Ocupados:"), row, 0)
+        self.lbl_used_ram_slots = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_used_ram_slots, row, 1)
+        row += 1
+
+        self.static_info_layout.addWidget(QLabel("Módulos de Memoria:"), row, 0)
+        self.lbl_memory_modules = QLabel("N/A")
+        self.static_info_layout.addWidget(self.lbl_memory_modules, row, 1)
+        row += 1
+
         self.static_info_layout.setRowStretch(row, 1)
         self.info_h_layout.addWidget(self.static_info_frame)
 
@@ -689,17 +701,64 @@ class RAMDetailWidget(QWidget):
 
         self.update_static_info()
 
+    def _get_ram_slot_info(self):
+        ram_info = {
+            "total_slots": "N/A",
+            "used_slots": 0,
+            "modules": []
+        }
+        if platform.system() != "Linux":
+            return ram_info
+
+        try:
+            result_type16 = subprocess.run(['sudo', 'dmidecode', '-t', '16'], capture_output=True, text=True, check=True)
+            for line in result_type16.stdout.splitlines():
+                if "Number Of Devices:" in line:
+                    ram_info["total_slots"] = line.split(":")[1].strip()
+                    break
+
+            result_type17 = subprocess.run(['sudo', 'dmidecode', '-t', '17'], capture_output=True, text=True, check=True)
+            current_module = {}
+            for line in result_type17.stdout.splitlines():
+                if "Memory Device" in line:
+                    if current_module:
+                        ram_info["modules"].append(current_module)
+                    current_module = {}
+                elif ":" in line:
+                    key, value = line.split(':', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if key == "Locator":
+                        current_module["slot"] = value
+                    elif key == "Size" and value != "No Module Installed":
+                        current_module["size"] = value
+                        ram_info["used_slots"] += 1
+            if current_module:
+                ram_info["modules"].append(current_module)
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error running dmidecode: {e}")
+            print(f"Stderr: {e.stderr}")
+            ram_info["total_slots"] = "Error (dmidecode)"
+            ram_info["used_slots"] = "Error (dmidecode)"
+            ram_info["modules"] = [{"slot": "Error", "size": "Error"}]
+        except FileNotFoundError:
+            ram_info["total_slots"] = "N/A (dmidecode not found)"
+            ram_info["used_slots"] = "N/A (dmidecode not found)"
+            ram_info["modules"] = [{"slot": "N/A", "size": "N/A"}]
+
+        return ram_info
 
     def update_static_info(self):
         if platform.system() == "Linux":
             try:
-                result = subprocess.run(['sudo', 'dmidecode', '-t', 'memory'], capture_output=True, text=True, check=True)
-                output = result.stdout
+                result_memory = subprocess.run(['sudo', 'dmidecode', '-t', 'memory'], capture_output=True, text=True, check=True)
+                output_memory = result_memory.stdout
 
                 ram_type = "N/A"
                 ram_speed = "N/A"
 
-                for line in output.splitlines():
+                for line in output_memory.splitlines():
                     line = line.strip()
                     if "Type:" in line and "Unknown" not in line:
                         ram_type = line.split("Type:")[1].strip()
@@ -717,21 +776,47 @@ class RAMDetailWidget(QWidget):
                             ram_speed = ram_speed
                         elif "MT/s" in ram_speed:
                             ram_speed = ram_speed.replace("MT/s", "MHz")
-
                 self.lbl_ram_type.setText(ram_type)
                 self.lbl_ram_speed.setText(ram_speed)
 
+                ram_data = self._get_ram_slot_info()
+                self.lbl_total_ram_slots.setText(str(ram_data["total_slots"]))
+                self.lbl_used_ram_slots.setText(str(ram_data["used_slots"]))
+
+                modules_text = ""
+                if ram_data["modules"]:
+                    for module in ram_data["modules"]:
+                        slot = module.get("slot", "Desconocido")
+                        size = module.get("size", "Desconocido")
+                        if size != "No Module Installed":
+                            modules_text += f"{slot}: {size}<br>"
+                    if not modules_text:
+                        modules_text = "No hay módulos de RAM instalados o detectables."
+                else:
+                    modules_text = "No se pudo obtener información de los módulos de RAM."
+                self.lbl_memory_modules.setText(modules_text)
+
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                self.lbl_ram_type.setText("N/A (Error: dmidecode)")
-                self.lbl_ram_speed.setText("N/A (Error: dmidecode)")
-                print(f"Error executing dmidecode: {e}")
+                self.lbl_ram_type.setText("N/A (Error)")
+                self.lbl_ram_speed.setText("N/A (Error)")
+                self.lbl_total_ram_slots.setText("N/A (Error)")
+                self.lbl_used_ram_slots.setText("N/A (Error)")
+                self.lbl_memory_modules.setText("N/A (Error)")
+                print(f"Error executing dmidecode in update_static_info: {e}")
             except Exception as e:
                 self.lbl_ram_type.setText("N/A (Error)")
                 self.lbl_ram_speed.setText("N/A (Error)")
-                print(f"Unexpected error getting RAM info: {e}")
+                self.lbl_total_ram_slots.setText("N/A (Error)")
+                self.lbl_used_ram_slots.setText("N/A (Error)")
+                self.lbl_memory_modules.setText("N/A (Error)")
+                print(f"Unexpected error getting RAM info in update_static_info: {e}")
         else:
             self.lbl_ram_type.setText("N/A (Linux only)")
             self.lbl_ram_speed.setText("N/A (Linux only)")
+            self.lbl_total_ram_slots.setText("N/A (Linux only)")
+            self.lbl_used_ram_slots.setText("N/A (Linux only)")
+            self.lbl_memory_modules.setText("N/A (Linux only)")
+
 
     def update_dynamic_info(self):
         ram_info = psutil.virtual_memory()
@@ -774,7 +859,7 @@ class DiskDetailWidget(QWidget):
         self.info_h_layout.setSpacing(20)
         self.info_h_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Dynamic Disk Information (Left Side)
+        # Dynamic Disk Information
         self.dynamic_info_frame = QFrame()
         self.dynamic_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
         self.dynamic_info_layout = QVBoxLayout(self.dynamic_info_frame)
@@ -810,7 +895,7 @@ class DiskDetailWidget(QWidget):
         self.dynamic_info_layout.addStretch()
         self.info_h_layout.addWidget(self.dynamic_info_frame)
 
-        # Static Disk Information (Right Side)
+        # Static Disk Information
         self.static_info_frame = QFrame()
         self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
         self.static_info_layout = QGridLayout(self.static_info_frame)
@@ -844,7 +929,6 @@ class DiskDetailWidget(QWidget):
 
 
     def update_dynamic_info(self):
-        # Update Disk Usage
         disk_usage = psutil.disk_usage('/')
         total_gb = disk_usage.total / (1024**3)
         used_gb = disk_usage.used / (1024**3)
@@ -856,7 +940,6 @@ class DiskDetailWidget(QWidget):
         self.lbl_disk_used.setText(f"{used_gb:.2f} GB")
         self.lbl_disk_percent.setText(f"{percent_usage:.1f}%")
 
-        # Update Disk I/O Speed
         current_disk_io = psutil.disk_io_counters(perdisk=False)
         read_bytes_diff = 0
         write_bytes_diff = 0
@@ -879,6 +962,7 @@ class DiskDetailWidget(QWidget):
 
         self.lbl_disk_read_speed.setText(format_bytes_per_second(read_bytes_diff))
         self.lbl_disk_write_speed.setText(format_bytes_per_second(write_bytes_diff))
+
 
 class NetworkDetailWidget(QWidget):
     back_to_dashboard = pyqtSignal()
@@ -931,7 +1015,7 @@ class NetworkDetailWidget(QWidget):
         self.dynamic_info_layout.addStretch()
         self.info_h_layout.addWidget(self.dynamic_info_frame)
 
-        # Static Network Information Frame
+        # Static Network Information
         self.static_info_frame = QFrame()
         self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
         self.static_info_layout = QGridLayout(self.static_info_frame)
@@ -1030,6 +1114,7 @@ class NetworkDetailWidget(QWidget):
         self.lbl_net_mac.setText(primary_mac)
         self.lbl_net_speed.setText(primary_speed)
 
+
 class GPUDetailWidget(QWidget):
     back_to_dashboard = pyqtSignal()
 
@@ -1055,7 +1140,7 @@ class GPUDetailWidget(QWidget):
         self.info_h_layout.setSpacing(20)
         self.info_h_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Dynamic GPU Information Frame
+        # Dynamic GPU Information
         self.dynamic_info_frame = QFrame()
         self.dynamic_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
         self.dynamic_info_layout = QVBoxLayout(self.dynamic_info_frame)
@@ -1096,7 +1181,7 @@ class GPUDetailWidget(QWidget):
         self.dynamic_info_layout.addStretch()
         self.info_h_layout.addWidget(self.dynamic_info_frame)
 
-        # Static GPU Information Frame
+        # Static GPU Information
         self.static_info_frame = QFrame()
         self.static_info_frame.setStyleSheet(f"background-color: {BG_COLOR_MEDIUM}; border-radius: 0px; padding: 10px;")
         self.static_info_layout = QGridLayout(self.static_info_frame)
@@ -1190,10 +1275,11 @@ class GPUDetailWidget(QWidget):
             self.lbl_gpu_memory_free.setText("N/A")
             self.lbl_gpu_memory_percent.setText("N/A")
 
+
 class Dashboard(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TaskM")
+        self.setWindowTitle("MonitorMoya")
         self.setGeometry(100, 100, 1400, 800)
         self.setStyleSheet(f"""
             QMainWindow {{
@@ -1322,7 +1408,6 @@ class Dashboard(QMainWindow):
             self.menu_layout.addWidget(btn)
             self.menu_buttons.append(btn)
 
-        # Connect menu buttons to relevant functions
         self.menu_buttons[0].clicked.connect(self.show_dashboard)
         self.menu_buttons[1].clicked.connect(self.show_cpu_detail)
         self.menu_buttons[2].clicked.connect(self.show_ram_detail)
@@ -1421,7 +1506,7 @@ class Dashboard(QMainWindow):
         self.cpu_detail_widget = CPUDetailWidget()
         self.cpu_detail_widget.back_to_dashboard.connect(self.show_dashboard)
 
-        self.ram_detail_widget = RAMDetailWidget()
+        self.ram_detail_widget = RAMDetailedWidget()
         self.ram_detail_widget.back_to_dashboard.connect(self.show_dashboard)
 
         self.disk_detail_widget = DiskDetailWidget()
@@ -1541,6 +1626,7 @@ class Dashboard(QMainWindow):
 
     def show_dashboard(self):
         self.content_stack.setCurrentIndex(0)
+
 
 def main():
     app = QApplication(sys.argv)
